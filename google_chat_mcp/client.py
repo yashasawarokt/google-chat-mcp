@@ -303,18 +303,22 @@ class GoogleChatClient:
     ) -> list[dict[str, Any]]:
         """Search message content across all (or specified) spaces.
 
-        Optimized for large workspaces (1000+ spaces). Two distinct strategies:
+        Optimized for large workspaces (1000+ spaces). Three strategies
+        chosen based on whether there's a keyword and the time window size:
 
         **Empty query** ("who did I talk to", "recent activity"):
-          - Single pass: fetch N recent messages from every space in the time
-            window. N is generous (25-50 per space) to capture all participants
-            in active threads, not just the latest poster.
+          Single pass: fetch 25+ recent messages from every active space to
+          capture full conversation threads and all participants.
 
-        **Keyword query** ("messages about budget"):
-          - If days_back is set and many spaces: first collect recent messages
-            (single pass) to discover active spaces, then run hasWords only on
-            those. The initial collection also serves as a client-side fallback.
-          - If few spaces or no time filter: run hasWords directly.
+        **Keyword + short window (<=7 days)**:
+          Single-pass collection discovers active spaces AND provides messages
+          for client-side matching. Then hasWords runs on active spaces only
+          for deeper results. Best of both worlds.
+
+        **Keyword + long window (>7 days) or no window**:
+          Skip collection (too expensive over months of data). Run hasWords
+          directly on all spaces — it's a server-side index lookup, fast even
+          for old messages. Early termination once enough results found.
         """
         if space_names is None:
             all_spaces = self.list_spaces()
@@ -325,10 +329,10 @@ class GoogleChatClient:
 
         has_query = bool(query and query.strip())
         searching_many = len(space_names) > 50
+        short_window = days_back is not None and days_back <= 7
 
         if not has_query:
             # ── Empty query: comprehensive recent-message fetch ──
-            # Use generous per-space limit to capture full conversation threads
             per_space = max(25, max_results // max(1, min(len(space_names), 200)))
             effective_days = days_back or 1
 
@@ -337,7 +341,6 @@ class GoogleChatClient:
                     space_names, effective_days, per_space,
                 )
             else:
-                # Small number of spaces — fetch directly
                 msgs = []
                 for sn in space_names:
                     try:
@@ -347,42 +350,32 @@ class GoogleChatClient:
                     except Exception:
                         pass
 
+        elif searching_many and short_window:
+            # ── Keyword + short window: collect-then-search ──
+            # Collection is cheap over a few days and gives us the pre-filter
+            prefetch_msgs, active_spaces = self._collect_recent_messages(
+                space_names, days_back, 25,
+            )
+
+            query_lower = query.lower()
+            msgs = [
+                m for m in prefetch_msgs
+                if query_lower in _msg_text(m).lower()
+            ]
+
+            if len(msgs) < max_results and active_spaces:
+                server_msgs = self._search_with_haswords(
+                    active_spaces, query, days_back, max_results,
+                )
+                msgs.extend(server_msgs)
+
         else:
-            # ── Keyword query ──
-            msgs = []
-
-            if searching_many and days_back:
-                # Phase 1: single-pass collection discovers active spaces AND
-                # gives us messages for client-side matching as a bonus
-                prefetch_msgs, active_spaces = self._collect_recent_messages(
-                    space_names, days_back, 25,
-                )
-
-                # Client-side matches from prefetch (free — already fetched)
-                query_lower = query.lower()
-                msgs = [
-                    m for m in prefetch_msgs
-                    if query_lower in _msg_text(m).lower()
-                ]
-
-                # Phase 2: server-side hasWords on active spaces only
-                # This catches messages the prefetch might have missed
-                # (e.g. space has 100 messages but we only prefetched 25)
-                if len(msgs) < max_results and active_spaces:
-                    server_msgs = self._search_with_haswords(
-                        active_spaces, query, days_back, max_results,
-                    )
-                    msgs.extend(server_msgs)
-            else:
-                # Few spaces or no time filter — hasWords directly
-                target = space_names
-                if searching_many and not days_back:
-                    # No time filter but many spaces — still use hasWords on all,
-                    # but with aggressive early termination
-                    pass
-                msgs = self._search_with_haswords(
-                    target, query, days_back, max_results,
-                )
+            # ── Keyword + long window or no window: hasWords directly ──
+            # Server-side index search is fast regardless of time range.
+            # No point collecting months of messages just to pre-filter.
+            msgs = self._search_with_haswords(
+                space_names, query, days_back, max_results,
+            )
 
         # Deduplicate and sort newest-first
         seen: set[str] = set()
@@ -402,7 +395,12 @@ class GoogleChatClient:
         days_back: int | None,
         max_results: int,
     ) -> list[dict[str, Any]]:
-        """Run server-side hasWords search across spaces in parallel."""
+        """Run server-side hasWords search across spaces in parallel.
+
+        hasWords is a server-side index lookup — each call is lightweight
+        regardless of time range. We use higher concurrency (40 workers)
+        than the collection path (30) since there's no heavy data transfer.
+        """
         time_filter = ""
         if days_back:
             cutoff = datetime.now(timezone.utc) - timedelta(days=days_back)
@@ -433,7 +431,7 @@ class GoogleChatClient:
             except Exception:
                 pass
 
-        with ThreadPoolExecutor(max_workers=20) as pool:
+        with ThreadPoolExecutor(max_workers=40) as pool:
             list(pool.map(_search_one, space_names))
 
         return collected
