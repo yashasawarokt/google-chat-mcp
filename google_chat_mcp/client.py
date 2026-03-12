@@ -65,21 +65,56 @@ class GoogleChatClient:
                 .get(resourceName=people_resource, personFields="names,emailAddresses")
                 .execute()
             )
-            names = result.get("names", [])
-            display = names[0].get("displayName") if names else None
-            if not display:
-                emails = result.get("emailAddresses", [])
-                display = emails[0].get("value") if emails else None
-            display = display or user_resource
+            display = self._extract_name(result) or user_resource
         except Exception:
             display = user_resource
 
         self._display_name_cache[user_resource] = display
         return display
 
+    def _extract_name(self, person: dict[str, Any]) -> str | None:
+        """Extract display name or email from a People API person response."""
+        names = person.get("names", [])
+        if names:
+            return names[0].get("displayName")
+        emails = person.get("emailAddresses", [])
+        if emails:
+            return emails[0].get("value")
+        return None
+
     def resolve_display_names(self, user_resources: list[str]) -> dict[str, str]:
-        """Batch-resolve a list of user resource names to display names."""
-        return {r: self.get_display_name(r) for r in user_resources}
+        """Batch-resolve user resource names to display names.
+
+        Uses the People API getBatchGet endpoint (up to 50 per call) to
+        minimize API calls and avoid rate limits.
+        """
+        uncached = [r for r in user_resources if r not in self._display_name_cache]
+        if not uncached:
+            return {r: self._display_name_cache[r] for r in user_resources}
+
+        # Batch lookup in chunks of 50 (API limit)
+        for i in range(0, len(uncached), 50):
+            chunk = uncached[i:i + 50]
+            people_ids = [r.replace("users/", "people/", 1) for r in chunk]
+            try:
+                result = (
+                    self._people_service.people()
+                    .getBatchGet(resourceNames=people_ids, personFields="names,emailAddresses")
+                    .execute()
+                )
+                for resp in result.get("responses", []):
+                    person = resp.get("person", {})
+                    resource_name = resp.get("requestedResourceName", "")
+                    user_name = resource_name.replace("people/", "users/", 1)
+                    display = self._extract_name(person) or user_name
+                    self._display_name_cache[user_name] = display
+            except Exception:
+                # Fall back to individual lookups for this chunk
+                for r in chunk:
+                    if r not in self._display_name_cache:
+                        self.get_display_name(r)
+
+        return {r: self._display_name_cache.get(r, r) for r in user_resources}
 
     # ------------------------------------------------------------------
     # Spaces (cached)
@@ -260,24 +295,20 @@ class GoogleChatClient:
     ) -> list[dict[str, Any]]:
         """Get all spaces with recent activity and the people who participated.
 
-        Much faster than search_messages for "who did I talk to" queries because
-        it fetches ALL messages from active spaces (not capped at 25) and extracts
-        unique senders. For DMs, this is 1 API call. For busy group spaces, it
-        paginates through all messages in the time window.
+        Two-phase approach:
+          1. Fetch messages from all spaces in parallel (fast, no name resolution)
+          2. Batch-resolve ALL unique sender IDs at once (50 per API call)
 
-        Returns a list of dicts, each with:
-          - space_name: resource name
-          - space_display: display name
-          - space_type: SPACE, GROUP_CHAT, DIRECT_MESSAGE
-          - participants: list of {name, display_name} dicts (excluding the caller)
-          - message_count: number of messages in the window
+        This avoids hundreds of individual People API calls that cause rate limits.
         """
         all_spaces = self.list_spaces()
         cutoff = datetime.now(timezone.utc) - timedelta(days=days_back)
         ts = cutoff.strftime("%Y-%m-%dT%H:%M:%SZ")
         time_filter = f'createTime > "{ts}"'
 
-        results: list[dict[str, Any]] = []
+        # Phase 1: collect messages and sender IDs (no name resolution yet)
+        raw_results: list[dict[str, Any]] = []
+        all_sender_ids: set[str] = set()
         lock = threading.Lock()
 
         def _scan_space(space: dict[str, Any]) -> None:
@@ -289,27 +320,22 @@ class GoogleChatClient:
                 if not msgs:
                     return
 
-                # Extract unique senders
                 sender_ids: set[str] = set()
                 for msg in msgs:
                     sender_name = msg.get("sender", {}).get("name", "")
                     if sender_name:
                         sender_ids.add(sender_name)
 
-                participants = []
-                for sid in sender_ids:
-                    display = self.get_display_name(sid)
-                    participants.append({"name": sid, "display_name": display})
-
                 stype = space.get("spaceType", space.get("type", "UNKNOWN"))
                 display = space.get("displayName") or space_name
 
                 with lock:
-                    results.append({
+                    all_sender_ids.update(sender_ids)
+                    raw_results.append({
                         "space_name": space_name,
                         "space_display": display,
                         "space_type": stype,
-                        "participants": participants,
+                        "sender_ids": sender_ids,
                         "message_count": len(msgs),
                     })
             except Exception:
@@ -317,6 +343,24 @@ class GoogleChatClient:
 
         with ThreadPoolExecutor(max_workers=30) as pool:
             list(pool.map(_scan_space, all_spaces))
+
+        # Phase 2: batch-resolve all names at once
+        name_map = self.resolve_display_names(list(all_sender_ids))
+
+        # Phase 3: assemble results with resolved names
+        results = []
+        for r in raw_results:
+            participants = [
+                {"name": sid, "display_name": name_map.get(sid, sid)}
+                for sid in r["sender_ids"]
+            ]
+            results.append({
+                "space_name": r["space_name"],
+                "space_display": r["space_display"],
+                "space_type": r["space_type"],
+                "participants": participants,
+                "message_count": r["message_count"],
+            })
 
         results.sort(key=lambda r: r["message_count"], reverse=True)
         return results
