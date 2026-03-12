@@ -209,6 +209,48 @@ def gchat_get_space_members(space_id: str) -> str:
 
 
 # ------------------------------------------------------------------
+# Tool: gchat_active_conversations
+# ------------------------------------------------------------------
+
+@mcp.tool()
+def gchat_active_conversations(days_back: int = 1) -> str:
+    """List all spaces with recent activity and everyone who participated.
+
+    Use this for "who have I spoken to?" or "list my recent conversations"
+    type queries. Much faster and more complete than search_messages for
+    this purpose — fetches ALL messages from active spaces, not a sample.
+
+    Args:
+        days_back: How many days of history to scan (default 1).
+
+    Returns:
+        Each active space with its participants and message count.
+    """
+    client = _get_client()
+    convos = client.get_active_conversations(days_back=days_back)
+
+    if not convos:
+        return f"No conversations found in the last {days_back} day(s)."
+
+    total_spaces = len(convos)
+    all_people: set[str] = set()
+    lines = [f"Active conversations in the last {days_back} day(s): {total_spaces} spaces\n"]
+
+    for c in convos:
+        stype = c["space_type"]
+        display = c["space_display"]
+        count = c["message_count"]
+        people = [p["display_name"] for p in c["participants"]]
+        all_people.update(people)
+
+        type_label = "DM" if stype == "DIRECT_MESSAGE" else "Group" if stype == "GROUP_CHAT" else "Space"
+        lines.append(f"[{type_label}] {display} ({count} msgs): {', '.join(people)}")
+
+    lines.insert(1, f"Total unique people: {len(all_people)}\n")
+    return "\n".join(lines)
+
+
+# ------------------------------------------------------------------
 # Tool: gchat_get_space
 # ------------------------------------------------------------------
 

@@ -254,6 +254,73 @@ class GoogleChatClient:
     # Search — across spaces
     # ------------------------------------------------------------------
 
+    def get_active_conversations(
+        self,
+        days_back: int = 1,
+    ) -> list[dict[str, Any]]:
+        """Get all spaces with recent activity and the people who participated.
+
+        Much faster than search_messages for "who did I talk to" queries because
+        it fetches ALL messages from active spaces (not capped at 25) and extracts
+        unique senders. For DMs, this is 1 API call. For busy group spaces, it
+        paginates through all messages in the time window.
+
+        Returns a list of dicts, each with:
+          - space_name: resource name
+          - space_display: display name
+          - space_type: SPACE, GROUP_CHAT, DIRECT_MESSAGE
+          - participants: list of {name, display_name} dicts (excluding the caller)
+          - message_count: number of messages in the window
+        """
+        all_spaces = self.list_spaces()
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days_back)
+        ts = cutoff.strftime("%Y-%m-%dT%H:%M:%SZ")
+        time_filter = f'createTime > "{ts}"'
+
+        results: list[dict[str, Any]] = []
+        lock = threading.Lock()
+
+        def _scan_space(space: dict[str, Any]) -> None:
+            space_name = space["name"]
+            try:
+                msgs = self.get_messages(
+                    space_name, limit=1000, filter_str=time_filter,
+                )
+                if not msgs:
+                    return
+
+                # Extract unique senders
+                sender_ids: set[str] = set()
+                for msg in msgs:
+                    sender_name = msg.get("sender", {}).get("name", "")
+                    if sender_name:
+                        sender_ids.add(sender_name)
+
+                participants = []
+                for sid in sender_ids:
+                    display = self.get_display_name(sid)
+                    participants.append({"name": sid, "display_name": display})
+
+                stype = space.get("spaceType", space.get("type", "UNKNOWN"))
+                display = space.get("displayName") or space_name
+
+                with lock:
+                    results.append({
+                        "space_name": space_name,
+                        "space_display": display,
+                        "space_type": stype,
+                        "participants": participants,
+                        "message_count": len(msgs),
+                    })
+            except Exception:
+                pass
+
+        with ThreadPoolExecutor(max_workers=30) as pool:
+            list(pool.map(_scan_space, all_spaces))
+
+        results.sort(key=lambda r: r["message_count"], reverse=True)
+        return results
+
     def _collect_recent_messages(
         self,
         space_names: list[str],
