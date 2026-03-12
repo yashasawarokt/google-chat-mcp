@@ -31,9 +31,9 @@ def get_credentials(credentials_file: Path | None = None) -> Credentials:
 
     Resolution order:
       1. credentials_file argument (explicit path)
-      2. GOOGLE_CHAT_CREDENTIALS environment variable (path to file)
-      3. ~/.config/google-chat-mcp/credentials.json (local file)
-      4. Embedded credentials bundled in this package (default)
+      2. GCHAT_CLIENT_ID + GCHAT_CLIENT_SECRET environment variables (preferred)
+      3. GOOGLE_CHAT_CREDENTIALS environment variable (path to credentials file)
+      4. ~/.config/google-chat-mcp/credentials.json (local file)
 
     Args:
         credentials_file: Optional explicit path to an OAuth client secrets JSON.
@@ -68,26 +68,41 @@ def _build_flow(credentials_file: Path | None) -> InstalledAppFlow:
     if credentials_file:
         return InstalledAppFlow.from_client_secrets_file(str(credentials_file), SCOPES)
 
-    # 2. Environment variable pointing to a file
+    # 2. Direct env vars — preferred for sharing (no credentials file needed)
+    client_id = os.environ.get("GCHAT_CLIENT_ID")
+    client_secret = os.environ.get("GCHAT_CLIENT_SECRET")
+    if client_id and client_secret:
+        config = {
+            "installed": {
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                "token_uri": "https://oauth2.googleapis.com/token",
+                "redirect_uris": ["urn:ietf:wg:oauth:2.0:oob", "http://localhost"],
+            }
+        }
+        return InstalledAppFlow.from_client_config(config, SCOPES)
+
+    # 3. Environment variable pointing to a credentials file
     env_path = os.environ.get("GOOGLE_CHAT_CREDENTIALS")
     if env_path:
         p = Path(env_path).expanduser().resolve()
         if p.exists():
             return InstalledAppFlow.from_client_secrets_file(str(p), SCOPES)
 
-    # 3. Local credentials file at default location
+    # 4. Local credentials file at default location
     default = TOKEN_DIR / "credentials.json"
     if default.exists():
         return InstalledAppFlow.from_client_secrets_file(str(default), SCOPES)
 
-    # 4. No credentials found
+    # 5. No credentials found
     raise FileNotFoundError(
-        "No credentials file found. Please either:\n"
-        "  1. Place credentials.json in the project folder and run:\n"
-        "       google-chat-mcp auth --credentials ./credentials.json\n"
-        "  2. Set the GOOGLE_CHAT_CREDENTIALS env var to your credentials.json path\n"
-        "  3. Copy credentials.json to ~/.config/google-chat-mcp/credentials.json\n\n"
-        "Get credentials.json from your team's shared credential store (Slack, 1Password, etc.)."
+        "No credentials found. Set the following environment variables and run `google-chat-mcp auth`:\n\n"
+        "  export GCHAT_CLIENT_ID='your-client-id'\n"
+        "  export GCHAT_CLIENT_SECRET='your-client-secret'\n\n"
+        "Get these values from your team's shared 1Password note or ask a teammate.\n\n"
+        "Alternatively, place a credentials.json file at:\n"
+        "  ~/.config/google-chat-mcp/credentials.json"
     )
 
 

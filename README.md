@@ -2,7 +2,7 @@
 
 An MCP (Model Context Protocol) server that connects Claude to your Google Chat workspace — search spaces, DMs, and full message history. All sender and member names are **automatically resolved to real display names** via the Google People/Directory API.
 
-**Each user authenticates with their own Google account.** No shared credentials, no admin access required.
+**Each user authenticates with their own Google account.** No shared credentials files, no admin access required.
 
 ---
 
@@ -18,7 +18,7 @@ An MCP (Model Context Protocol) server that connects Claude to your Google Chat 
 
 ## Setup
 
-**Step 1 — Install**
+### Step 1 — Install
 
 ```bash
 git clone https://github.com/ROKT/google-chat-mcp-yash.git
@@ -28,19 +28,26 @@ pipx install -e .
 
 > **Don't have pipx?** `brew install pipx`
 
-**Step 2 — Get `credentials.json`**
+### Step 2 — Get the OAuth credentials
 
-Get `credentials.json` from the team's shared credential store (Slack, 1Password, etc.) and place it in the project root.
+Get the `GCHAT_CLIENT_ID` and `GCHAT_CLIENT_SECRET` values from your team's shared 1Password note (or ask a teammate).
 
-**Step 3 — Authenticate**
+Add them to your shell profile (`~/.zshrc`):
 
 ```bash
-google-chat-mcp auth --credentials ./credentials.json
+export GCHAT_CLIENT_ID='your-client-id-here'
+export GCHAT_CLIENT_SECRET='your-client-secret-here'
+```
+
+Then reload: `source ~/.zshrc`
+
+### Step 3 — Authenticate
+
+```bash
+google-chat-mcp auth
 ```
 
 This opens a browser window. Sign in with your **Rokt Google account** and grant the requested permissions. Your token is saved to `~/.config/google-chat-mcp/token.json` — you won't need to do this again unless you log out.
-
-> **Tip:** Copy `credentials.json` to `~/.config/google-chat-mcp/credentials.json` once and you can just run `google-chat-mcp auth` without the flag in future.
 
 ---
 
@@ -55,15 +62,17 @@ Add to `~/.cursor/mcp.json`:
   "mcpServers": {
     "google-chat": {
       "command": "google-chat-mcp",
-      "args": ["serve"]
+      "args": ["serve"],
+      "env": {
+        "GCHAT_CLIENT_ID": "your-client-id-here",
+        "GCHAT_CLIENT_SECRET": "your-client-secret-here"
+      }
     }
   }
 }
 ```
 
-> Find the full binary path with `which google-chat-mcp` if Cursor can't find it, and use that instead of `"google-chat-mcp"`.
-
-Then reload Cursor: **Cmd+Shift+P → Developer: Reload Window**
+> If Cursor can't find the command, use the full path from `which google-chat-mcp`.
 
 ### Claude Code
 
@@ -74,7 +83,11 @@ Add to `~/.claude/settings.json`:
   "mcpServers": {
     "google-chat": {
       "command": "google-chat-mcp",
-      "args": ["serve"]
+      "args": ["serve"],
+      "env": {
+        "GCHAT_CLIENT_ID": "your-client-id-here",
+        "GCHAT_CLIENT_SECRET": "your-client-secret-here"
+      }
     }
   }
 }
@@ -89,7 +102,11 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS)
   "mcpServers": {
     "google-chat": {
       "command": "google-chat-mcp",
-      "args": ["serve"]
+      "args": ["serve"],
+      "env": {
+        "GCHAT_CLIENT_ID": "your-client-id-here",
+        "GCHAT_CLIENT_SECRET": "your-client-secret-here"
+      }
     }
   }
 }
@@ -147,7 +164,9 @@ Nothing is ever written — all scopes are read-only.
 
 ## Troubleshooting
 
-**`Connection closed` in Cursor** — Run `which google-chat-mcp` in your terminal, and use the full path in `mcp.json` instead of just `"google-chat-mcp"`.
+**`No credentials found`** — Make sure `GCHAT_CLIENT_ID` and `GCHAT_CLIENT_SECRET` are set in your environment. Check with `echo $GCHAT_CLIENT_ID`.
+
+**`Connection closed` in Cursor** — Run `which google-chat-mcp` and use the full path in `mcp.json`. Also make sure the `env` block includes both `GCHAT_CLIENT_ID` and `GCHAT_CLIENT_SECRET`.
 
 **`Error 403: The caller does not have permission`** — Your Google Workspace may restrict Chat or People API access. Ask your admin to allow them.
 
@@ -175,6 +194,7 @@ google-chat-mcp logout   # Revoke cached token
 - The server only requests **read-only** scopes — it cannot send messages or modify anything
 - Your token is stored locally at `~/.config/google-chat-mcp/token.json`
 - Nothing is sent to any third-party server — the MCP server runs entirely on your machine
+- OAuth client credentials are passed via environment variables — never committed to git
 
 ---
 
