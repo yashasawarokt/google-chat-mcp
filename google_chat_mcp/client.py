@@ -6,8 +6,8 @@ fetching messages, and searching across message history.
 
 from __future__ import annotations
 
-import re
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -17,6 +17,8 @@ from googleapiclient.errors import HttpError
 
 from .auth import get_credentials
 
+_SPACES_CACHE_TTL = 300  # 5 minutes
+
 
 class GoogleChatClient:
     """Thin wrapper around the Google Chat API with search helpers."""
@@ -25,6 +27,8 @@ class GoogleChatClient:
         self._creds = get_credentials(credentials_file)
         self._local = threading.local()
         self._display_name_cache: dict[str, str] = {}
+        self._spaces_cache: list[dict[str, Any]] | None = None
+        self._spaces_cache_time: float = 0
 
     @property
     def _service(self):
@@ -50,18 +54,10 @@ class GoogleChatClient:
     # ------------------------------------------------------------------
 
     def get_display_name(self, user_resource: str) -> str:
-        """Resolve a Google user resource name to a display name.
-
-        Args:
-            user_resource: e.g. "users/113563209800934591916"
-
-        Returns:
-            Display name string, or the original resource name if lookup fails.
-        """
+        """Resolve a Google user resource name to a display name."""
         if user_resource in self._display_name_cache:
             return self._display_name_cache[user_resource]
 
-        # Convert "users/123" → "people/123" for the People API
         people_resource = user_resource.replace("users/", "people/", 1)
         try:
             result = (
@@ -82,22 +78,27 @@ class GoogleChatClient:
         return display
 
     def resolve_display_names(self, user_resources: list[str]) -> dict[str, str]:
-        """Batch-resolve a list of user resource names to display names.
-
-        Returns a dict mapping resource name → display name.
-        """
+        """Batch-resolve a list of user resource names to display names."""
         return {r: self.get_display_name(r) for r in user_resources}
 
     # ------------------------------------------------------------------
-    # Spaces
+    # Spaces (cached)
     # ------------------------------------------------------------------
 
-    def list_spaces(self) -> list[dict[str, Any]]:
+    def list_spaces(self, *, force_refresh: bool = False) -> list[dict[str, Any]]:
         """Return all spaces the authenticated user is a member of.
 
-        Includes SPACE (named rooms), GROUP_CHAT, and DIRECT_MESSAGE.
+        Results are cached for 5 minutes to avoid repeated API calls during search.
         """
-        spaces = []
+        now = time.monotonic()
+        if (
+            not force_refresh
+            and self._spaces_cache is not None
+            and (now - self._spaces_cache_time) < _SPACES_CACHE_TTL
+        ):
+            return self._spaces_cache
+
+        spaces: list[dict[str, Any]] = []
         page_token = None
 
         while True:
@@ -111,6 +112,8 @@ class GoogleChatClient:
             if not page_token:
                 break
 
+        self._spaces_cache = spaces
+        self._spaces_cache_time = now
         return spaces
 
     # ------------------------------------------------------------------
@@ -251,6 +254,38 @@ class GoogleChatClient:
     # Search — across spaces
     # ------------------------------------------------------------------
 
+    def _filter_active_spaces(
+        self, space_names: list[str], days_back: int,
+    ) -> list[str]:
+        """Pre-filter spaces to only those with recent activity.
+
+        Probes each space with a single message fetch (limit=1) with a time
+        filter. Spaces with no messages in the window are skipped entirely.
+        Much cheaper than running a full hasWords search on 1000+ spaces.
+        """
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days_back)
+        ts = cutoff.strftime("%Y-%m-%dT%H:%M:%SZ")
+        filter_str = f'createTime > "{ts}"'
+
+        active: list[str] = []
+        lock = threading.Lock()
+
+        def _probe(space_name: str) -> None:
+            try:
+                msgs = self.get_messages(
+                    space_name, limit=1, filter_str=filter_str,
+                )
+                if msgs:
+                    with lock:
+                        active.append(space_name)
+            except Exception:
+                pass
+
+        with ThreadPoolExecutor(max_workers=30) as pool:
+            list(pool.map(_probe, space_names))
+
+        return active
+
     def search_messages(
         self,
         query: str,
@@ -261,37 +296,52 @@ class GoogleChatClient:
     ) -> list[dict[str, Any]]:
         """Search message content across all (or specified) spaces.
 
-        Strategy:
-          1. Try the hasWords API filter first — fast server-side search.
-          2. If that returns nothing (unsupported or no match), fall back to
-             fetching recent messages and filtering client-side.
-          3. Search up to 20 spaces in parallel for speed.
+        Optimized for large workspaces (1000+ spaces):
 
-        Args:
-            query: Text to search for.
-            space_names: List of resource names to search in. Searches all
-                         spaces if None.
-            max_results: Max total results to return.
-            days_back: Limit search to this many days of history. None = all time.
+        1. If days_back is set and searching all spaces, pre-filter to only
+           spaces with recent activity (cheap 1-message probe per space).
+           This typically reduces 1000+ spaces down to ~50-100.
 
-        Returns:
-            List of message dicts sorted by createTime descending.
+        2. Use server-side hasWords filter on active spaces in parallel.
+
+        3. Fallback to client-side filtering only for spaces where the API
+           returned an error (not empty results).
+
+        4. Early termination once max_results is reached.
         """
         if space_names is None:
             all_spaces = self.list_spaces()
             space_names = [s["name"] for s in all_spaces]
 
-        max_per_space = max(50, max_results // max(1, len(space_names)))
+        if not space_names:
+            return []
 
-        def _search_one(space_name: str) -> list[dict[str, Any]]:
-            # Try hasWords filter first
+        # Pre-filter: when searching all spaces with a time window,
+        # probe for activity first to avoid searching 1000+ dead spaces
+        if days_back and len(space_names) > 50:
+            space_names = self._filter_active_spaces(space_names, days_back)
+            if not space_names:
+                return []
+
+        time_filter = ""
+        if days_back:
+            cutoff = datetime.now(timezone.utc) - timedelta(days=days_back)
+            ts = cutoff.strftime("%Y-%m-%dT%H:%M:%SZ")
+            time_filter = f' AND createTime > "{ts}"'
+
+        max_per_space = max(20, max_results // max(1, len(space_names)))
+        collected: list[dict[str, Any]] = []
+        needs_fallback: list[str] = []
+        lock = threading.Lock()
+
+        def _has_enough() -> bool:
+            with lock:
+                return len(collected) >= max_results
+
+        def _search_server(space_name: str) -> None:
+            if _has_enough():
+                return
             try:
-                time_filter = ""
-                if days_back:
-                    cutoff = datetime.now(timezone.utc) - timedelta(days=days_back)
-                    ts = cutoff.strftime("%Y-%m-%dT%H:%M:%SZ")
-                    time_filter = f' AND createTime > "{ts}"'
-
                 filter_str = f'hasWords:"{_escape_filter(query)}"{time_filter}'
                 msgs = self.get_messages(
                     space_name,
@@ -299,36 +349,50 @@ class GoogleChatClient:
                     filter_str=filter_str,
                 )
                 if msgs:
-                    return msgs
-            except HttpError:
+                    with lock:
+                        collected.extend(msgs)
+            except HttpError as e:
+                if e.resp.status not in (403, 404):
+                    with lock:
+                        needs_fallback.append(space_name)
+            except Exception:
                 pass
 
-            # Fallback: fetch recent messages and filter client-side
-            fetch_limit = max(200, max_per_space * 10)
-            msgs = self.get_messages(
-                space_name,
-                limit=fetch_limit,
-                days_back=days_back,
-            )
-            query_lower = query.lower()
-            return [
-                m for m in msgs
-                if query_lower in _msg_text(m).lower()
-            ][:max_per_space]
+        with ThreadPoolExecutor(max_workers=20) as pool:
+            list(pool.map(_search_server, space_names))
 
-        all_results: list[dict[str, Any]] = []
-        with ThreadPoolExecutor(max_workers=50) as pool:
-            futures = {pool.submit(_search_one, name): name for name in space_names}
-            for future in as_completed(futures):
+        # Fallback: only for spaces where hasWords errored (not empty)
+        if needs_fallback and not _has_enough():
+            remaining = max_results - len(collected)
+            fallback_limit = min(100, remaining)
+
+            def _search_fallback(space_name: str) -> None:
+                if _has_enough():
+                    return
                 try:
-                    all_results.extend(future.result())
+                    msgs = self.get_messages(
+                        space_name,
+                        limit=fallback_limit,
+                        days_back=days_back or 7,
+                    )
+                    query_lower = query.lower()
+                    matches = [
+                        m for m in msgs
+                        if query_lower in _msg_text(m).lower()
+                    ]
+                    if matches:
+                        with lock:
+                            collected.extend(matches)
                 except Exception:
-                    pass  # Skip spaces that error out
+                    pass
 
-        # Sort newest-first and deduplicate by message name
+            with ThreadPoolExecutor(max_workers=10) as pool:
+                list(pool.map(_search_fallback, needs_fallback))
+
+        # Deduplicate and sort newest-first
         seen: set[str] = set()
         unique: list[dict[str, Any]] = []
-        for msg in sorted(all_results, key=lambda m: m.get("createTime", ""), reverse=True):
+        for msg in sorted(collected, key=lambda m: m.get("createTime", ""), reverse=True):
             name = msg.get("name", "")
             if name not in seen:
                 seen.add(name)

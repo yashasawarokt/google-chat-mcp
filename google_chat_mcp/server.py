@@ -26,7 +26,6 @@ mcp = FastMCP(
 
 # Lazy client — instantiated on first tool call
 _client: GoogleChatClient | None = None
-_spaces_cache: dict[str, dict[str, Any]] | None = None
 
 
 def _get_client() -> GoogleChatClient:
@@ -38,12 +37,12 @@ def _get_client() -> GoogleChatClient:
 
 
 def _get_spaces_by_name() -> dict[str, dict[str, Any]]:
-    """Return a dict mapping space resource name → space dict (cached)."""
-    global _spaces_cache
-    if _spaces_cache is None:
-        spaces = _get_client().list_spaces()
-        _spaces_cache = {s["name"]: s for s in spaces}
-    return _spaces_cache
+    """Return a dict mapping space resource name → space dict.
+
+    Uses the client's built-in 5-minute cache to avoid repeated API calls.
+    """
+    spaces = _get_client().list_spaces()
+    return {s["name"]: s for s in spaces}
 
 
 # ------------------------------------------------------------------
