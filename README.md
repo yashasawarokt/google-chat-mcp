@@ -58,6 +58,7 @@ Once connected, just ask Claude naturally:
 | Who's in a space | "Who's in the #data-platform space?" |
 | Browse spaces | "Show me all my Google Chat spaces" |
 | Recent conversations | "Who have I spoken to in the last 3 days?" |
+| Send a message | "Send 'heading out for lunch' to my DM with Caroline" |
 
 ---
 
@@ -169,7 +170,7 @@ google-chat-mcp logout   # Revoke cached token
 ## Privacy & security
 
 - All authentication is handled by Google OAuth 2.0 — your password is never stored
-- The server only requests **read-only** scopes — it cannot send messages or modify anything
+- Read and write scopes are requested — Claude can search messages and send on your behalf (always with your confirmation)
 - Your token is stored locally at `~/.config/google-chat-mcp/token.json`
 - OAuth client credentials are stored locally at `~/.config/google-chat-mcp/env.json`
 - Nothing is sent to any third-party server — the MCP server runs entirely on your machine
