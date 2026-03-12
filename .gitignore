@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+*.egg
+
+# Auth tokens — NEVER commit personal tokens
+token.json
+**/token.json
+
+# OAuth credentials — contains client secret, share via secure means (Slack, 1Password, etc.)
+credentials.json
+
+# IDE / local tool settings
+.cursor/
+.vscode/
+.idea/
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# pipx / pip
+pip-wheel-metadata/
