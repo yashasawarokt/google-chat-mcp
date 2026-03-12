@@ -254,37 +254,44 @@ class GoogleChatClient:
     # Search — across spaces
     # ------------------------------------------------------------------
 
-    def _filter_active_spaces(
-        self, space_names: list[str], days_back: int,
-    ) -> list[str]:
-        """Pre-filter spaces to only those with recent activity.
+    def _collect_recent_messages(
+        self,
+        space_names: list[str],
+        days_back: int,
+        per_space: int,
+    ) -> tuple[list[dict[str, Any]], list[str]]:
+        """Fetch recent messages from many spaces in parallel.
 
-        Probes each space with a single message fetch (limit=1) with a time
-        filter. Spaces with no messages in the window are skipped entirely.
-        Much cheaper than running a full hasWords search on 1000+ spaces.
+        Single-pass: fetches `per_space` messages from each space within the
+        time window. Returns both the messages collected AND the list of space
+        names that had activity (for use as a pre-filter in keyword search).
+
+        This replaces the old two-step probe-then-fetch pattern.
         """
         cutoff = datetime.now(timezone.utc) - timedelta(days=days_back)
         ts = cutoff.strftime("%Y-%m-%dT%H:%M:%SZ")
-        filter_str = f'createTime > "{ts}"'
+        time_filter = f'createTime > "{ts}"'
 
-        active: list[str] = []
+        all_msgs: list[dict[str, Any]] = []
+        active_spaces: list[str] = []
         lock = threading.Lock()
 
-        def _probe(space_name: str) -> None:
+        def _fetch(space_name: str) -> None:
             try:
                 msgs = self.get_messages(
-                    space_name, limit=1, filter_str=filter_str,
+                    space_name, limit=per_space, filter_str=time_filter,
                 )
                 if msgs:
                     with lock:
-                        active.append(space_name)
+                        all_msgs.extend(msgs)
+                        active_spaces.append(space_name)
             except Exception:
                 pass
 
         with ThreadPoolExecutor(max_workers=30) as pool:
-            list(pool.map(_probe, space_names))
+            list(pool.map(_fetch, space_names))
 
-        return active
+        return all_msgs, active_spaces
 
     def search_messages(
         self,
@@ -296,17 +303,18 @@ class GoogleChatClient:
     ) -> list[dict[str, Any]]:
         """Search message content across all (or specified) spaces.
 
-        Optimized for large workspaces (1000+ spaces):
+        Optimized for large workspaces (1000+ spaces). Two distinct strategies:
 
-        1. If days_back is set and searching all spaces, pre-filter to only
-           spaces with recent activity (cheap 1-message probe per space).
-           This typically reduces 1000+ spaces down to ~50-100.
+        **Empty query** ("who did I talk to", "recent activity"):
+          - Single pass: fetch N recent messages from every space in the time
+            window. N is generous (25-50 per space) to capture all participants
+            in active threads, not just the latest poster.
 
-        2. If query is non-empty, use server-side hasWords filter.
-           If query is empty, fetch recent messages directly (for "list
-           all activity" type queries).
-
-        3. Early termination once max_results is reached.
+        **Keyword query** ("messages about budget"):
+          - If days_back is set and many spaces: first collect recent messages
+            (single pass) to discover active spaces, then run hasWords only on
+            those. The initial collection also serves as a client-side fallback.
+          - If few spaces or no time filter: run hasWords directly.
         """
         if space_names is None:
             all_spaces = self.list_spaces()
@@ -315,14 +323,93 @@ class GoogleChatClient:
         if not space_names:
             return []
 
-        # Pre-filter: when searching all spaces with a time window,
-        # probe for activity first to avoid searching 1000+ dead spaces
-        if days_back and len(space_names) > 50:
-            space_names = self._filter_active_spaces(space_names, days_back)
-            if not space_names:
-                return []
+        has_query = bool(query and query.strip())
+        searching_many = len(space_names) > 50
 
-        max_per_space = max(5, max_results // max(1, len(space_names)))
+        if not has_query:
+            # ── Empty query: comprehensive recent-message fetch ──
+            # Use generous per-space limit to capture full conversation threads
+            per_space = max(25, max_results // max(1, min(len(space_names), 200)))
+            effective_days = days_back or 1
+
+            if searching_many:
+                msgs, _ = self._collect_recent_messages(
+                    space_names, effective_days, per_space,
+                )
+            else:
+                # Small number of spaces — fetch directly
+                msgs = []
+                for sn in space_names:
+                    try:
+                        msgs.extend(self.get_messages(
+                            sn, limit=per_space, days_back=effective_days,
+                        ))
+                    except Exception:
+                        pass
+
+        else:
+            # ── Keyword query ──
+            msgs = []
+
+            if searching_many and days_back:
+                # Phase 1: single-pass collection discovers active spaces AND
+                # gives us messages for client-side matching as a bonus
+                prefetch_msgs, active_spaces = self._collect_recent_messages(
+                    space_names, days_back, 25,
+                )
+
+                # Client-side matches from prefetch (free — already fetched)
+                query_lower = query.lower()
+                msgs = [
+                    m for m in prefetch_msgs
+                    if query_lower in _msg_text(m).lower()
+                ]
+
+                # Phase 2: server-side hasWords on active spaces only
+                # This catches messages the prefetch might have missed
+                # (e.g. space has 100 messages but we only prefetched 25)
+                if len(msgs) < max_results and active_spaces:
+                    server_msgs = self._search_with_haswords(
+                        active_spaces, query, days_back, max_results,
+                    )
+                    msgs.extend(server_msgs)
+            else:
+                # Few spaces or no time filter — hasWords directly
+                target = space_names
+                if searching_many and not days_back:
+                    # No time filter but many spaces — still use hasWords on all,
+                    # but with aggressive early termination
+                    pass
+                msgs = self._search_with_haswords(
+                    target, query, days_back, max_results,
+                )
+
+        # Deduplicate and sort newest-first
+        seen: set[str] = set()
+        unique: list[dict[str, Any]] = []
+        for msg in sorted(msgs, key=lambda m: m.get("createTime", ""), reverse=True):
+            name = msg.get("name", "")
+            if name not in seen:
+                seen.add(name)
+                unique.append(msg)
+
+        return unique[:max_results]
+
+    def _search_with_haswords(
+        self,
+        space_names: list[str],
+        query: str,
+        days_back: int | None,
+        max_results: int,
+    ) -> list[dict[str, Any]]:
+        """Run server-side hasWords search across spaces in parallel."""
+        time_filter = ""
+        if days_back:
+            cutoff = datetime.now(timezone.utc) - timedelta(days=days_back)
+            ts = cutoff.strftime("%Y-%m-%dT%H:%M:%SZ")
+            time_filter = f' AND createTime > "{ts}"'
+
+        max_per_space = max(20, max_results // max(1, len(space_names)))
         collected: list[dict[str, Any]] = []
         lock = threading.Lock()
 
@@ -330,64 +417,26 @@ class GoogleChatClient:
             with lock:
                 return len(collected) >= max_results
 
-        has_query = bool(query and query.strip())
+        def _search_one(space_name: str) -> None:
+            if _has_enough():
+                return
+            try:
+                filter_str = f'hasWords:"{_escape_filter(query)}"{time_filter}'
+                msgs = self.get_messages(
+                    space_name,
+                    limit=max_per_space,
+                    filter_str=filter_str,
+                )
+                if msgs:
+                    with lock:
+                        collected.extend(msgs)
+            except Exception:
+                pass
 
-        if has_query:
-            # Keyword search: use server-side hasWords filter
-            time_filter = ""
-            if days_back:
-                cutoff = datetime.now(timezone.utc) - timedelta(days=days_back)
-                ts = cutoff.strftime("%Y-%m-%dT%H:%M:%SZ")
-                time_filter = f' AND createTime > "{ts}"'
+        with ThreadPoolExecutor(max_workers=20) as pool:
+            list(pool.map(_search_one, space_names))
 
-            def _search_with_query(space_name: str) -> None:
-                if _has_enough():
-                    return
-                try:
-                    filter_str = f'hasWords:"{_escape_filter(query)}"{time_filter}'
-                    msgs = self.get_messages(
-                        space_name,
-                        limit=max_per_space,
-                        filter_str=filter_str,
-                    )
-                    if msgs:
-                        with lock:
-                            collected.extend(msgs)
-                except Exception:
-                    pass
-
-            with ThreadPoolExecutor(max_workers=20) as pool:
-                list(pool.map(_search_with_query, space_names))
-        else:
-            # No query: fetch recent messages directly from active spaces
-            def _fetch_recent(space_name: str) -> None:
-                if _has_enough():
-                    return
-                try:
-                    msgs = self.get_messages(
-                        space_name,
-                        limit=max_per_space,
-                        days_back=days_back or 1,
-                    )
-                    if msgs:
-                        with lock:
-                            collected.extend(msgs)
-                except Exception:
-                    pass
-
-            with ThreadPoolExecutor(max_workers=20) as pool:
-                list(pool.map(_fetch_recent, space_names))
-
-        # Deduplicate and sort newest-first
-        seen: set[str] = set()
-        unique: list[dict[str, Any]] = []
-        for msg in sorted(collected, key=lambda m: m.get("createTime", ""), reverse=True):
-            name = msg.get("name", "")
-            if name not in seen:
-                seen.add(name)
-                unique.append(msg)
-
-        return unique[:max_results]
+        return collected
 
 
 # ------------------------------------------------------------------
