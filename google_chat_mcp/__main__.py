@@ -61,10 +61,7 @@ def serve():
       "mcpServers": {
         "google-chat": {
           "command": "google-chat-mcp",
-          "args": ["serve"],
-          "env": {
-            "GOOGLE_CHAT_CREDENTIALS": "/path/to/credentials.json"
-          }
+          "args": ["serve"]
         }
       }
     }

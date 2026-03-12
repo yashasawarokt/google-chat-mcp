@@ -6,7 +6,6 @@ Each user authenticates independently — tokens are stored locally.
 
 from __future__ import annotations
 
-import json
 import os
 from pathlib import Path
 
@@ -26,41 +25,18 @@ TOKEN_DIR = Path.home() / ".config" / "google-chat-mcp"
 TOKEN_FILE = TOKEN_DIR / "token.json"
 
 
-def get_credentials_path() -> Path:
-    """Return the path to the OAuth credentials JSON file.
-
-    Priority:
-    1. GOOGLE_CHAT_CREDENTIALS environment variable
-    2. ~/.config/google-chat-mcp/credentials.json
-    """
-    env_path = os.environ.get("GOOGLE_CHAT_CREDENTIALS")
-    if env_path:
-        p = Path(env_path).expanduser().resolve()
-        if p.exists():
-            return p
-        raise FileNotFoundError(
-            f"GOOGLE_CHAT_CREDENTIALS points to a file that doesn't exist: {p}\n"
-            "Please check the path and try again."
-        )
-
-    default = TOKEN_DIR / "credentials.json"
-    if default.exists():
-        return default
-
-    raise FileNotFoundError(
-        "No credentials file found. Please either:\n"
-        "  1. Set the GOOGLE_CHAT_CREDENTIALS env var to your credentials.json path, or\n"
-        "  2. Copy credentials.json to ~/.config/google-chat-mcp/credentials.json\n\n"
-        "See README.md for instructions on creating a Google Cloud project and OAuth credentials."
-    )
-
 
 def get_credentials(credentials_file: Path | None = None) -> Credentials:
     """Load cached credentials or run the OAuth flow to get new ones.
 
+    Resolution order:
+      1. credentials_file argument (explicit path)
+      2. GOOGLE_CHAT_CREDENTIALS environment variable (path to file)
+      3. ~/.config/google-chat-mcp/credentials.json (local file)
+      4. Embedded credentials bundled in this package (default)
+
     Args:
-        credentials_file: Path to the OAuth client secrets JSON. If None,
-                          auto-detected via get_credentials_path().
+        credentials_file: Optional explicit path to an OAuth client secrets JSON.
 
     Returns:
         Valid Google OAuth2 Credentials object.
@@ -76,8 +52,7 @@ def get_credentials(credentials_file: Path | None = None) -> Credentials:
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
         else:
-            creds_path = credentials_file or get_credentials_path()
-            flow = InstalledAppFlow.from_client_secrets_file(str(creds_path), SCOPES)
+            flow = _build_flow(credentials_file)
             creds = flow.run_local_server(port=0, open_browser=True)
 
         # Cache the token for next time
@@ -85,6 +60,35 @@ def get_credentials(credentials_file: Path | None = None) -> Credentials:
         TOKEN_FILE.write_text(creds.to_json())
 
     return creds
+
+
+def _build_flow(credentials_file: Path | None) -> InstalledAppFlow:
+    """Return an InstalledAppFlow using the best available credentials source."""
+    # 1. Explicit file path argument
+    if credentials_file:
+        return InstalledAppFlow.from_client_secrets_file(str(credentials_file), SCOPES)
+
+    # 2. Environment variable pointing to a file
+    env_path = os.environ.get("GOOGLE_CHAT_CREDENTIALS")
+    if env_path:
+        p = Path(env_path).expanduser().resolve()
+        if p.exists():
+            return InstalledAppFlow.from_client_secrets_file(str(p), SCOPES)
+
+    # 3. Local credentials file at default location
+    default = TOKEN_DIR / "credentials.json"
+    if default.exists():
+        return InstalledAppFlow.from_client_secrets_file(str(default), SCOPES)
+
+    # 4. No credentials found
+    raise FileNotFoundError(
+        "No credentials file found. Please either:\n"
+        "  1. Place credentials.json in the project folder and run:\n"
+        "       google-chat-mcp auth --credentials ./credentials.json\n"
+        "  2. Set the GOOGLE_CHAT_CREDENTIALS env var to your credentials.json path\n"
+        "  3. Copy credentials.json to ~/.config/google-chat-mcp/credentials.json\n\n"
+        "Get credentials.json from your team's shared credential store (Slack, 1Password, etc.)."
+    )
 
 
 def revoke_credentials() -> None:

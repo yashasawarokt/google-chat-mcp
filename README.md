@@ -18,49 +18,29 @@ An MCP (Model Context Protocol) server that connects Claude to your Google Chat 
 
 ## Setup
 
-**Step 1 — Clone the repo and get credentials**
+**Step 1 — Install**
 
 ```bash
-git clone https://github.com/yashasawarokt/google-chat-mcp.git
-cd google-chat-mcp
-```
-
-Then get the `credentials.json` file from your team's shared credential store (Slack, 1Password, etc.) and place it in the project root. It is not committed to git for security reasons — ask a teammate or the repo owner for it.
-
-**Step 2 — Install the package**
-
-```bash
-cd google-chat-mcp
+git clone https://github.com/ROKT/google-chat-mcp-yash.git
+cd google-chat-mcp-yash
 pipx install -e .
 ```
 
-> **Don't have pipx?** Install it first: `brew install pipx`
+> **Don't have pipx?** `brew install pipx`
 
-**Step 3 — Enable the required APIs in Google Cloud**
+**Step 2 — Get `credentials.json`**
 
-The OAuth project in `credentials.json` needs two APIs enabled:
+Get `credentials.json` from the team's shared credential store (Slack, 1Password, etc.) and place it in the project root.
 
-1. [Google Chat API](https://console.cloud.google.com/marketplace/product/google/chat.googleapis.com) — enable it, then configure a Chat App under the [Configuration tab](https://console.cloud.google.com/apis/api/chat.googleapis.com/hangouts-chat)
-2. [People API](https://console.cloud.google.com/marketplace/product/google/people.googleapis.com) — enable it (used to resolve user IDs to real names)
-
-> Both APIs must be enabled on the same Google Cloud project that issued `credentials.json`.
-
-**Step 4 — Authenticate with your own Google account**
-
-From inside the project folder:
+**Step 3 — Authenticate**
 
 ```bash
 google-chat-mcp auth --credentials ./credentials.json
 ```
 
-This opens a browser window. Sign in with **your** Google account and grant the requested permissions (Chat read + Directory read). Your personal token is saved to `~/.config/google-chat-mcp/token.json` — you won't need to do this again unless you log out.
+This opens a browser window. Sign in with your **Rokt Google account** and grant the requested permissions. Your token is saved to `~/.config/google-chat-mcp/token.json` — you won't need to do this again unless you log out.
 
-To avoid passing the credentials path every time, set it as an env variable:
-
-```bash
-export GOOGLE_CHAT_CREDENTIALS=/path/to/google-chat-mcp/credentials.json
-google-chat-mcp auth
-```
+> **Tip:** Copy `credentials.json` to `~/.config/google-chat-mcp/credentials.json` once and you can just run `google-chat-mcp auth` without the flag in future.
 
 ---
 
@@ -68,25 +48,22 @@ google-chat-mcp auth
 
 ### Cursor
 
-Add to `~/.cursor/mcp.json` (or your project's `.cursor/mcp.json`):
+Add to `~/.cursor/mcp.json`:
 
 ```json
 {
   "mcpServers": {
     "google-chat": {
-      "command": "/path/to/google-chat-mcp-binary",
-      "args": ["serve"],
-      "env": {
-        "GOOGLE_CHAT_CREDENTIALS": "/path/to/google-chat-mcp/credentials.json"
-      }
+      "command": "google-chat-mcp",
+      "args": ["serve"]
     }
   }
 }
 ```
 
-> Find the binary path with: `which google-chat-mcp`
->
-> **Tip:** Copy `credentials.json` to `~/.config/google-chat-mcp/credentials.json` to avoid paths with spaces.
+> Find the full binary path with `which google-chat-mcp` if Cursor can't find it, and use that instead of `"google-chat-mcp"`.
+
+Then reload Cursor: **Cmd+Shift+P → Developer: Reload Window**
 
 ### Claude Code
 
@@ -97,10 +74,7 @@ Add to `~/.claude/settings.json`:
   "mcpServers": {
     "google-chat": {
       "command": "google-chat-mcp",
-      "args": ["serve"],
-      "env": {
-        "GOOGLE_CHAT_CREDENTIALS": "/path/to/credentials.json"
-      }
+      "args": ["serve"]
     }
   }
 }
@@ -115,10 +89,7 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS)
   "mcpServers": {
     "google-chat": {
       "command": "google-chat-mcp",
-      "args": ["serve"],
-      "env": {
-        "GOOGLE_CHAT_CREDENTIALS": "/path/to/credentials.json"
-      }
+      "args": ["serve"]
     }
   }
 }
@@ -126,7 +97,7 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS)
 
 ### Cowork (Claude desktop app)
 
-Copy the `skill/SKILL.md` file to your Cowork skills folder, or install it via the skill management UI.
+Copy `skill/SKILL.md` to your Cowork skills folder, or install it via the skill management UI.
 
 ---
 
@@ -176,13 +147,9 @@ Nothing is ever written — all scopes are read-only.
 
 ## Troubleshooting
 
-**`No credentials file found`** — Set `GOOGLE_CHAT_CREDENTIALS` env var or copy `credentials.json` to `~/.config/google-chat-mcp/credentials.json`.
+**`Connection closed` in Cursor** — Run `which google-chat-mcp` in your terminal, and use the full path in `mcp.json` instead of just `"google-chat-mcp"`.
 
-**`Google Chat app not found` (404)** — The Chat API needs to be enabled and the app configured in [Google Cloud Console](https://console.cloud.google.com/apis/api/chat.googleapis.com/hangouts-chat).
-
-**`Error 403: The caller does not have permission`** — Your Google Workspace may restrict Chat or People API access. Ask your admin to allow them, or check that your OAuth consent screen is approved.
-
-**`Connection closed` in Cursor** — Usually caused by spaces in the credentials path. Copy `credentials.json` to `~/.config/google-chat-mcp/credentials.json` and update your `mcp.json` to use that path.
+**`Error 403: The caller does not have permission`** — Your Google Workspace may restrict Chat or People API access. Ask your admin to allow them.
 
 **`No messages found`** — The Google Chat API only returns messages in spaces where you're a member. DMs with inactive accounts may also return empty.
 
