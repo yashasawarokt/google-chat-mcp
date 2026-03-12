@@ -1,22 +1,111 @@
 """CLI entry point for google-chat-mcp.
 
 Usage:
-    google-chat-mcp auth     # Authenticate with Google (opens browser)
+    google-chat-mcp setup    # One-time setup: saves creds, configures Cursor, authenticates
+    google-chat-mcp auth     # Re-authenticate with Google (opens browser)
     google-chat-mcp serve    # Start MCP server (stdio, for Cursor/Claude Code)
     google-chat-mcp logout   # Revoke cached token
 """
 
 from __future__ import annotations
 
+import json
+import os
+import shutil
 import sys
+from pathlib import Path
 
 import click
+
+_CONFIG_DIR = Path.home() / ".config" / "google-chat-mcp"
+_ENV_FILE = _CONFIG_DIR / "env.json"
+
+
+def _save_env(client_id: str, client_secret: str) -> None:
+    """Persist OAuth client credentials to a local config file."""
+    _CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    _ENV_FILE.write_text(json.dumps({
+        "GCHAT_CLIENT_ID": client_id,
+        "GCHAT_CLIENT_SECRET": client_secret,
+    }, indent=2) + "\n")
+
+
+def _load_env() -> dict[str, str]:
+    """Load saved OAuth client credentials, if any."""
+    if _ENV_FILE.exists():
+        return json.loads(_ENV_FILE.read_text())
+    return {}
+
+
+def _inject_saved_env() -> None:
+    """Inject saved credentials into the environment if not already set."""
+    saved = _load_env()
+    for key in ("GCHAT_CLIENT_ID", "GCHAT_CLIENT_SECRET"):
+        if key not in os.environ and key in saved:
+            os.environ[key] = saved[key]
 
 
 @click.group()
 def main():
     """Google Chat MCP server — connect Claude to your Google Chat workspace."""
     pass
+
+
+@main.command()
+@click.option("--client-id", prompt="GCHAT_CLIENT_ID", help="Google OAuth Client ID")
+@click.option("--client-secret", prompt="GCHAT_CLIENT_SECRET", help="Google OAuth Client Secret")
+def setup(client_id, client_secret):
+    """One-time setup: saves credentials, configures Cursor MCP, and authenticates.
+
+    \b
+    Get the client ID and secret from your team's 1Password, then run:
+        google-chat-mcp setup
+    """
+    from .auth import get_credentials, TOKEN_FILE
+
+    # 1. Save credentials locally
+    _save_env(client_id, client_secret)
+    click.echo(f"\n✅ Credentials saved to {_ENV_FILE}")
+
+    # 2. Inject into current process so auth can use them
+    os.environ["GCHAT_CLIENT_ID"] = client_id
+    os.environ["GCHAT_CLIENT_SECRET"] = client_secret
+
+    # 3. Configure Cursor MCP
+    binary = shutil.which("google-chat-mcp") or "google-chat-mcp"
+    mcp_entry = {
+        "command": binary,
+        "args": ["serve"],
+        "env": {
+            "GCHAT_CLIENT_ID": client_id,
+            "GCHAT_CLIENT_SECRET": client_secret,
+        },
+    }
+
+    cursor_mcp = Path.home() / ".cursor" / "mcp.json"
+    cursor_mcp.parent.mkdir(parents=True, exist_ok=True)
+
+    if cursor_mcp.exists():
+        config = json.loads(cursor_mcp.read_text())
+    else:
+        config = {}
+
+    config.setdefault("mcpServers", {})
+    config["mcpServers"]["google-chat"] = mcp_entry
+    cursor_mcp.write_text(json.dumps(config, indent=2) + "\n")
+    click.echo(f"✅ Cursor MCP config updated: {cursor_mcp}")
+
+    # 4. Authenticate
+    click.echo("\nOpening browser for Google authentication...")
+    try:
+        creds = get_credentials()
+        click.echo(f"\n✅ Authentication successful!")
+        click.echo(f"   Token saved to: {TOKEN_FILE}")
+        click.echo("\n🎉 All done! Reload Cursor (Cmd+Shift+P → Developer: Reload Window) and you're good to go.")
+    except Exception as e:
+        click.echo(f"\n❌ Authentication failed: {e}", err=True)
+        click.echo("You can retry with: google-chat-mcp auth")
+        sys.exit(1)
 
 
 @main.command()
@@ -32,8 +121,9 @@ def auth(credentials):
     Run this once before starting the MCP server.
     Your token will be saved to ~/.config/google-chat-mcp/token.json.
     """
-    from pathlib import Path
     from .auth import get_credentials, TOKEN_FILE
+
+    _inject_saved_env()
 
     click.echo("Opening browser for Google authentication...")
     try:
@@ -52,20 +142,9 @@ def auth(credentials):
 
 @main.command()
 def serve():
-    """Start the MCP server (stdio transport).
+    """Start the MCP server (stdio transport)."""
+    _inject_saved_env()
 
-    Add this to your MCP config in Cursor, Claude Code, or Claude Desktop:
-
-    \b
-    {
-      "mcpServers": {
-        "google-chat": {
-          "command": "google-chat-mcp",
-          "args": ["serve"]
-        }
-      }
-    }
-    """
     from .server import serve as _serve
     _serve()
 

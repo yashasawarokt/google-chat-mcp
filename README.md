@@ -18,7 +18,7 @@ An MCP (Model Context Protocol) server that connects Claude to your Google Chat 
 
 ## Setup
 
-### Step 1 — Install
+### 1. Install
 
 ```bash
 git clone https://github.com/ROKT/google-chat-mcp-yash.git
@@ -28,93 +28,19 @@ pipx install -e .
 
 > **Don't have pipx?** `brew install pipx`
 
-### Step 2 — Get the OAuth credentials
-
-Get the `GCHAT_CLIENT_ID` and `GCHAT_CLIENT_SECRET` values from your team's shared 1Password note (or ask a teammate).
-
-Add them to your shell profile (`~/.zshrc`):
+### 2. Run setup
 
 ```bash
-export GCHAT_CLIENT_ID='your-client-id-here'
-export GCHAT_CLIENT_SECRET='your-client-secret-here'
+google-chat-mcp setup
 ```
 
-Then reload: `source ~/.zshrc`
+This will:
+1. Prompt you for the **Client ID** and **Client Secret** (get these from 1Password or a teammate)
+2. Save them locally to `~/.config/google-chat-mcp/env.json`
+3. Automatically configure `~/.cursor/mcp.json`
+4. Open a browser for Google OAuth — sign in with your Rokt account
 
-### Step 3 — Authenticate
-
-```bash
-google-chat-mcp auth
-```
-
-This opens a browser window. Sign in with your **Rokt Google account** and grant the requested permissions. Your token is saved to `~/.config/google-chat-mcp/token.json` — you won't need to do this again unless you log out.
-
----
-
-## Connecting to your MCP client
-
-### Cursor
-
-Add to `~/.cursor/mcp.json`:
-
-```json
-{
-  "mcpServers": {
-    "google-chat": {
-      "command": "google-chat-mcp",
-      "args": ["serve"],
-      "env": {
-        "GCHAT_CLIENT_ID": "your-client-id-here",
-        "GCHAT_CLIENT_SECRET": "your-client-secret-here"
-      }
-    }
-  }
-}
-```
-
-> If Cursor can't find the command, use the full path from `which google-chat-mcp`.
-
-### Claude Code
-
-Add to `~/.claude/settings.json`:
-
-```json
-{
-  "mcpServers": {
-    "google-chat": {
-      "command": "google-chat-mcp",
-      "args": ["serve"],
-      "env": {
-        "GCHAT_CLIENT_ID": "your-client-id-here",
-        "GCHAT_CLIENT_SECRET": "your-client-secret-here"
-      }
-    }
-  }
-}
-```
-
-### Claude Desktop
-
-Add to `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS):
-
-```json
-{
-  "mcpServers": {
-    "google-chat": {
-      "command": "google-chat-mcp",
-      "args": ["serve"],
-      "env": {
-        "GCHAT_CLIENT_ID": "your-client-id-here",
-        "GCHAT_CLIENT_SECRET": "your-client-secret-here"
-      }
-    }
-  }
-}
-```
-
-### Cowork (Claude desktop app)
-
-Copy `skill/SKILL.md` to your Cowork skills folder, or install it via the skill management UI.
+**That's it.** Reload Cursor (Cmd+Shift+P → Developer: Reload Window) and start chatting.
 
 ---
 
@@ -147,9 +73,60 @@ All tools return **real display names** for senders and members — no raw user 
 
 ---
 
-## OAuth Scopes
+## Other MCP clients
 
-This server requests the following read-only scopes:
+The `setup` command auto-configures Cursor. For other clients, add manually:
+
+### Claude Code
+
+Add to `~/.claude/settings.json`:
+
+```json
+{
+  "mcpServers": {
+    "google-chat": {
+      "command": "google-chat-mcp",
+      "args": ["serve"]
+    }
+  }
+}
+```
+
+### Claude Desktop
+
+Add to `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS):
+
+```json
+{
+  "mcpServers": {
+    "google-chat": {
+      "command": "google-chat-mcp",
+      "args": ["serve"]
+    }
+  }
+}
+```
+
+> For Claude Code and Claude Desktop, the `serve` command automatically loads saved credentials from `~/.config/google-chat-mcp/env.json` — no `env` block needed.
+
+### Cowork
+
+Copy `skill/SKILL.md` to your Cowork skills folder.
+
+---
+
+## Commands
+
+```
+google-chat-mcp setup    # One-time setup (saves creds, configures Cursor, authenticates)
+google-chat-mcp auth     # Re-authenticate with Google
+google-chat-mcp serve    # Start MCP server (called automatically by MCP clients)
+google-chat-mcp logout   # Revoke cached token
+```
+
+---
+
+## OAuth Scopes
 
 | Scope | Purpose |
 |---|---|
@@ -164,27 +141,15 @@ Nothing is ever written — all scopes are read-only.
 
 ## Troubleshooting
 
-**`No credentials found`** — Make sure `GCHAT_CLIENT_ID` and `GCHAT_CLIENT_SECRET` are set in your environment. Check with `echo $GCHAT_CLIENT_ID`.
+**`No credentials found`** — Run `google-chat-mcp setup` to save your credentials.
 
-**`Connection closed` in Cursor** — Run `which google-chat-mcp` and use the full path in `mcp.json`. Also make sure the `env` block includes both `GCHAT_CLIENT_ID` and `GCHAT_CLIENT_SECRET`.
+**`Connection closed` in Cursor** — Run `which google-chat-mcp` and check the path matches what's in `~/.cursor/mcp.json`. Re-run `google-chat-mcp setup` to fix.
 
-**`Error 403: The caller does not have permission`** — Your Google Workspace may restrict Chat or People API access. Ask your admin to allow them.
+**`Error 403`** — Your Google Workspace may restrict Chat or People API access. Ask your admin.
 
-**`No messages found`** — The Google Chat API only returns messages in spaces where you're a member. DMs with inactive accounts may also return empty.
+**Token expired** — Run `google-chat-mcp auth` to refresh.
 
-**Token expired** — Run `google-chat-mcp auth` again to refresh.
-
-**Force re-authentication** — Run `google-chat-mcp logout` then `google-chat-mcp auth`.
-
----
-
-## Commands
-
-```
-google-chat-mcp auth     # Authenticate with Google (run once)
-google-chat-mcp serve    # Start MCP server (called automatically by MCP clients)
-google-chat-mcp logout   # Revoke cached token
-```
+**Force re-authentication** — `google-chat-mcp logout && google-chat-mcp auth`
 
 ---
 
@@ -193,8 +158,8 @@ google-chat-mcp logout   # Revoke cached token
 - All authentication is handled by Google OAuth 2.0 — your password is never stored
 - The server only requests **read-only** scopes — it cannot send messages or modify anything
 - Your token is stored locally at `~/.config/google-chat-mcp/token.json`
+- OAuth client credentials are stored locally at `~/.config/google-chat-mcp/env.json`
 - Nothing is sent to any third-party server — the MCP server runs entirely on your machine
-- OAuth client credentials are passed via environment variables — never committed to git
 
 ---
 

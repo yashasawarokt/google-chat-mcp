@@ -97,8 +97,10 @@ Example:
 ## Setup (for new users)
 
 If you get an authentication error, the user needs to:
-1. Run `google-chat-mcp auth` in their terminal
+1. Run `google-chat-mcp setup` in their terminal (prompts for Client ID + Secret, configures everything)
 2. Complete the Google OAuth flow in their browser (grants Chat + Directory read access)
-3. Then restart their MCP client (Cursor, Claude Desktop, etc.)
+3. Reload Cursor (Cmd+Shift+P → Developer: Reload Window)
+
+If they've already run setup but the token expired, just run `google-chat-mcp auth`.
 
 If there's no MCP connection at all, direct them to the README for full setup instructions.
