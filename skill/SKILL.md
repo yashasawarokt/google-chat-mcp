@@ -33,10 +33,18 @@ all sender/member user IDs to real display names via the Google People (Director
 
 ## Available Tools
 
+### Read
 - **`gchat_list_spaces`** — lists all spaces, group chats, and DMs the user belongs to
 - **`gchat_search_messages`** — full-text search across all (or specific) spaces
 - **`gchat_get_space_messages`** — read recent messages from a specific space
 - **`gchat_get_space_members`** — list who is in a given space (returns real names)
+- **`gchat_get_space`** — get details of a specific space
+- **`gchat_get_message`** — get a single message by resource name
+- **`gchat_get_member`** — get details of a specific member
+
+### Write
+- **`gchat_send_message`** — send a text message to a space or DM
+- **`gchat_delete_message`** — delete a message by resource name
 
 ## Workflow
 

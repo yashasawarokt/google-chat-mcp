@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "google-chat-mcp"
-version = "0.2.0"
+version = "0.3.0"
 description = "MCP server for Google Chat — search spaces, DMs, and message history with real display names via People API"
 readme = "README.md"
 requires-python = ">=3.10"

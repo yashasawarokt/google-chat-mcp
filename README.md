@@ -18,29 +18,30 @@ An MCP (Model Context Protocol) server that connects Claude to your Google Chat 
 
 ## Setup
 
-### 1. Install
+### Quick install (one command)
 
 ```bash
-git clone https://github.com/ROKT/google-chat-mcp-yash.git
-cd google-chat-mcp-yash
-pipx install -e .
+git clone https://github.com/ROKT/google-chat-mcp-yash.git && cd google-chat-mcp-yash && pipx install -e . && google-chat-mcp setup --client-id YOUR_CLIENT_ID --client-secret YOUR_CLIENT_SECRET
 ```
 
-> **Don't have pipx?** `brew install pipx`
+Replace `YOUR_CLIENT_ID` and `YOUR_CLIENT_SECRET` with the values from 1Password or a teammate.
 
-### 2. Run setup
+> **Don't have pipx?** Run `brew install pipx` first.
+
+### What `setup` does
+
+1. Saves your credentials locally to `~/.config/google-chat-mcp/env.json`
+2. Automatically configures `~/.cursor/mcp.json`
+3. Opens a browser for Google OAuth — sign in with your Rokt account
+
+**That's it.** Reload Cursor (Cmd+Shift+P → Developer: Reload Window) and start chatting.
+
+### Interactive setup (if you prefer)
 
 ```bash
 google-chat-mcp setup
+# Prompts for Client ID and Client Secret interactively
 ```
-
-This will:
-1. Prompt you for the **Client ID** and **Client Secret** (get these from 1Password or a teammate)
-2. Save them locally to `~/.config/google-chat-mcp/env.json`
-3. Automatically configure `~/.cursor/mcp.json`
-4. Open a browser for Google OAuth — sign in with your Rokt account
-
-**That's it.** Reload Cursor (Cmd+Shift+P → Developer: Reload Window) and start chatting.
 
 ---
 
@@ -62,12 +63,24 @@ Once connected, just ask Claude naturally:
 
 ## Available MCP tools
 
+### Read
+
 | Tool | Description |
 |---|---|
 | `gchat_list_spaces` | List all spaces, group chats, and DMs |
 | `gchat_search_messages` | Search messages across all or specific spaces |
 | `gchat_get_space_messages` | Get recent messages from one space |
 | `gchat_get_space_members` | List members of a space (with real display names) |
+| `gchat_get_space` | Get details of a specific space |
+| `gchat_get_message` | Get a single message by resource name |
+| `gchat_get_member` | Get details of a specific member |
+
+### Write
+
+| Tool | Description |
+|---|---|
+| `gchat_send_message` | Send a text message to a space or DM |
+| `gchat_delete_message` | Delete a message |
 
 All tools return **real display names** for senders and members — no raw user IDs.
 
@@ -132,10 +145,10 @@ google-chat-mcp logout   # Revoke cached token
 |---|---|
 | `chat.spaces.readonly` | List spaces and DMs |
 | `chat.messages.readonly` | Read message history |
+| `chat.messages.create` | Send new messages |
+| `chat.messages` | Delete messages |
 | `chat.memberships.readonly` | Read space membership |
 | `directory.readonly` | Resolve user IDs → real names via Google People API |
-
-Nothing is ever written — all scopes are read-only.
 
 ---
 

@@ -52,14 +52,17 @@ def main():
 
 
 @main.command()
-@click.option("--client-id", prompt="GCHAT_CLIENT_ID", help="Google OAuth Client ID")
-@click.option("--client-secret", prompt="GCHAT_CLIENT_SECRET", help="Google OAuth Client Secret")
+@click.option("--client-id", prompt="GCHAT_CLIENT_ID", help="Google OAuth Client ID", envvar="GCHAT_CLIENT_ID")
+@click.option("--client-secret", prompt="GCHAT_CLIENT_SECRET", help="Google OAuth Client Secret", envvar="GCHAT_CLIENT_SECRET")
 def setup(client_id, client_secret):
     """One-time setup: saves credentials, configures Cursor MCP, and authenticates.
 
     \b
-    Get the client ID and secret from your team's 1Password, then run:
+    Interactive:
         google-chat-mcp setup
+
+    One-liner (copy-paste from 1Password):
+        google-chat-mcp setup --client-id YOUR_ID --client-secret YOUR_SECRET
     """
     from .auth import get_credentials, TOKEN_FILE
 

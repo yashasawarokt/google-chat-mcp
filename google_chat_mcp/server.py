@@ -1,10 +1,7 @@
 """MCP server for Google Chat.
 
-Exposes 4 tools via the Model Context Protocol (stdio transport):
-  - gchat_list_spaces
-  - gchat_search_messages
-  - gchat_get_space_messages
-  - gchat_get_space_members
+Exposes tools via the Model Context Protocol (stdio transport) for
+reading, searching, and sending messages in Google Chat.
 """
 
 from __future__ import annotations
@@ -210,6 +207,122 @@ def gchat_get_space_members(space_id: str) -> str:
         lines.append(f"• {display} ({mtype}, {role})")
 
     return "\n".join(lines)
+
+
+# ------------------------------------------------------------------
+# Tool: gchat_get_space
+# ------------------------------------------------------------------
+
+@mcp.tool()
+def gchat_get_space(space_id: str) -> str:
+    """Get details of a specific Google Chat space.
+
+    Args:
+        space_id: Space resource name (e.g. "spaces/XXXXXXXX").
+
+    Returns:
+        Space details including name, type, and member count.
+    """
+    client = _get_client()
+    space = client.get_space(space_id)
+
+    stype = space.get("spaceType", space.get("type", "UNKNOWN"))
+    display = space.get("displayName") or "(unnamed)"
+    lines = [
+        f"Space: {display}",
+        f"Type: {stype}",
+        f"Resource: {space.get('name', '')}",
+    ]
+    if space.get("spaceDetails", {}).get("description"):
+        lines.append(f"Description: {space['spaceDetails']['description']}")
+    return "\n".join(lines)
+
+
+# ------------------------------------------------------------------
+# Tool: gchat_get_message
+# ------------------------------------------------------------------
+
+@mcp.tool()
+def gchat_get_message(message_id: str) -> str:
+    """Get a single message by its resource name.
+
+    Args:
+        message_id: Full message resource name (e.g. "spaces/X/messages/Y").
+
+    Returns:
+        The formatted message with sender, timestamp, and text.
+    """
+    client = _get_client()
+    spaces_by_name = _get_spaces_by_name()
+    msg = client.get_message(message_id)
+    return format_message(msg, spaces_by_name, client)
+
+
+# ------------------------------------------------------------------
+# Tool: gchat_get_member
+# ------------------------------------------------------------------
+
+@mcp.tool()
+def gchat_get_member(member_id: str) -> str:
+    """Get details of a specific member in a space.
+
+    Args:
+        member_id: Full member resource name (e.g. "spaces/X/members/Y").
+
+    Returns:
+        Member display name, type, and role.
+    """
+    client = _get_client()
+    m = client.get_member(member_id)
+
+    member_info = m.get("member", {})
+    resource = member_info.get("name", "")
+    display = member_info.get("displayName")
+    if not display and resource:
+        display = client.get_display_name(resource)
+    display = display or resource or "Unknown"
+    role = m.get("role", "ROLE_MEMBER")
+    mtype = member_info.get("type", "HUMAN")
+    return f"{display} ({mtype}, {role})"
+
+
+# ------------------------------------------------------------------
+# Tool: gchat_send_message
+# ------------------------------------------------------------------
+
+@mcp.tool()
+def gchat_send_message(space_id: str, text: str) -> str:
+    """Send a text message to a Google Chat space or DM.
+
+    Args:
+        space_id: Space resource name (e.g. "spaces/XXXXXXXX").
+        text: The message text to send.
+
+    Returns:
+        Confirmation with the sent message details.
+    """
+    client = _get_client()
+    msg = client.send_message(space_id, text)
+    return f"Message sent to {space_id}:\n{format_message(msg, _get_spaces_by_name(), client)}"
+
+
+# ------------------------------------------------------------------
+# Tool: gchat_delete_message
+# ------------------------------------------------------------------
+
+@mcp.tool()
+def gchat_delete_message(message_id: str) -> str:
+    """Delete a message from Google Chat.
+
+    Args:
+        message_id: Full message resource name (e.g. "spaces/X/messages/Y").
+
+    Returns:
+        Confirmation that the message was deleted.
+    """
+    client = _get_client()
+    client.delete_message(message_id)
+    return f"Message deleted: {message_id}"
 
 
 # ------------------------------------------------------------------

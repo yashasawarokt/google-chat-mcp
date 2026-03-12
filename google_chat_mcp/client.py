@@ -208,6 +208,46 @@ class GoogleChatClient:
         return members
 
     # ------------------------------------------------------------------
+    # Single-item getters
+    # ------------------------------------------------------------------
+
+    def get_space(self, space_name: str) -> dict[str, Any]:
+        """Get details for a single space."""
+        return self._service.spaces().get(name=space_name).execute()
+
+    def get_message(self, message_name: str) -> dict[str, Any]:
+        """Get a single message by resource name (e.g. spaces/X/messages/Y)."""
+        return self._service.spaces().messages().get(name=message_name).execute()
+
+    def get_member(self, member_name: str) -> dict[str, Any]:
+        """Get a single member by resource name (e.g. spaces/X/members/Y)."""
+        return self._service.spaces().members().get(name=member_name).execute()
+
+    # ------------------------------------------------------------------
+    # Write operations
+    # ------------------------------------------------------------------
+
+    def send_message(self, space_name: str, text: str) -> dict[str, Any]:
+        """Send a text message to a space.
+
+        Args:
+            space_name: Resource name like "spaces/XXXXXXXX".
+            text: Message body text.
+
+        Returns:
+            The created message dict.
+        """
+        return (
+            self._service.spaces().messages()
+            .create(parent=space_name, body={"text": text})
+            .execute()
+        )
+
+    def delete_message(self, message_name: str) -> None:
+        """Delete a message by resource name (e.g. spaces/X/messages/Y)."""
+        self._service.spaces().messages().delete(name=message_name).execute()
+
+    # ------------------------------------------------------------------
     # Search — across spaces
     # ------------------------------------------------------------------
 
