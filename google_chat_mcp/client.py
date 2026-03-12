@@ -302,12 +302,11 @@ class GoogleChatClient:
            spaces with recent activity (cheap 1-message probe per space).
            This typically reduces 1000+ spaces down to ~50-100.
 
-        2. Use server-side hasWords filter on active spaces in parallel.
+        2. If query is non-empty, use server-side hasWords filter.
+           If query is empty, fetch recent messages directly (for "list
+           all activity" type queries).
 
-        3. Fallback to client-side filtering only for spaces where the API
-           returned an error (not empty results).
-
-        4. Early termination once max_results is reached.
+        3. Early termination once max_results is reached.
         """
         if space_names is None:
             all_spaces = self.list_spaces()
@@ -323,71 +322,61 @@ class GoogleChatClient:
             if not space_names:
                 return []
 
-        time_filter = ""
-        if days_back:
-            cutoff = datetime.now(timezone.utc) - timedelta(days=days_back)
-            ts = cutoff.strftime("%Y-%m-%dT%H:%M:%SZ")
-            time_filter = f' AND createTime > "{ts}"'
-
-        max_per_space = max(20, max_results // max(1, len(space_names)))
+        max_per_space = max(5, max_results // max(1, len(space_names)))
         collected: list[dict[str, Any]] = []
-        needs_fallback: list[str] = []
         lock = threading.Lock()
 
         def _has_enough() -> bool:
             with lock:
                 return len(collected) >= max_results
 
-        def _search_server(space_name: str) -> None:
-            if _has_enough():
-                return
-            try:
-                filter_str = f'hasWords:"{_escape_filter(query)}"{time_filter}'
-                msgs = self.get_messages(
-                    space_name,
-                    limit=max_per_space,
-                    filter_str=filter_str,
-                )
-                if msgs:
-                    with lock:
-                        collected.extend(msgs)
-            except HttpError as e:
-                if e.resp.status not in (403, 404):
-                    with lock:
-                        needs_fallback.append(space_name)
-            except Exception:
-                pass
+        has_query = bool(query and query.strip())
 
-        with ThreadPoolExecutor(max_workers=20) as pool:
-            list(pool.map(_search_server, space_names))
+        if has_query:
+            # Keyword search: use server-side hasWords filter
+            time_filter = ""
+            if days_back:
+                cutoff = datetime.now(timezone.utc) - timedelta(days=days_back)
+                ts = cutoff.strftime("%Y-%m-%dT%H:%M:%SZ")
+                time_filter = f' AND createTime > "{ts}"'
 
-        # Fallback: only for spaces where hasWords errored (not empty)
-        if needs_fallback and not _has_enough():
-            remaining = max_results - len(collected)
-            fallback_limit = min(100, remaining)
+            def _search_with_query(space_name: str) -> None:
+                if _has_enough():
+                    return
+                try:
+                    filter_str = f'hasWords:"{_escape_filter(query)}"{time_filter}'
+                    msgs = self.get_messages(
+                        space_name,
+                        limit=max_per_space,
+                        filter_str=filter_str,
+                    )
+                    if msgs:
+                        with lock:
+                            collected.extend(msgs)
+                except Exception:
+                    pass
 
-            def _search_fallback(space_name: str) -> None:
+            with ThreadPoolExecutor(max_workers=20) as pool:
+                list(pool.map(_search_with_query, space_names))
+        else:
+            # No query: fetch recent messages directly from active spaces
+            def _fetch_recent(space_name: str) -> None:
                 if _has_enough():
                     return
                 try:
                     msgs = self.get_messages(
                         space_name,
-                        limit=fallback_limit,
-                        days_back=days_back or 7,
+                        limit=max_per_space,
+                        days_back=days_back or 1,
                     )
-                    query_lower = query.lower()
-                    matches = [
-                        m for m in msgs
-                        if query_lower in _msg_text(m).lower()
-                    ]
-                    if matches:
+                    if msgs:
                         with lock:
-                            collected.extend(matches)
+                            collected.extend(msgs)
                 except Exception:
                     pass
 
-            with ThreadPoolExecutor(max_workers=10) as pool:
-                list(pool.map(_search_fallback, needs_fallback))
+            with ThreadPoolExecutor(max_workers=20) as pool:
+                list(pool.map(_fetch_recent, space_names))
 
         # Deduplicate and sort newest-first
         seen: set[str] = set()
